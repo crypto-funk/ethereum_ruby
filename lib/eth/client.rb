@@ -86,7 +86,7 @@ module Eth
     # @param address [Eth::Address] the address to get the nonce for.
     # @return [Integer] the next nonce to be used.
     def get_nonce(address)
-      eth_get_transaction_count(address, "pending")["result"].to_i 16
+      eth_get_transaction_count(address, "latest")["result"].to_i 16
     end
 
     # Simply transfer Ether to an account and waits for it to be mined.
@@ -166,6 +166,35 @@ module Eth
       contract.address = Address.new(addr).to_s
     end
 
+    def estimate_gas(data, to: nil, sender_key: nil)
+      params = {
+        data: data,
+      }
+
+      unless to.nil?
+        params.merge!({
+          to: to
+        })
+      end
+
+      unless sender_key.nil?
+        params.merge!({
+          from: sender_key.address
+        })
+      end
+
+      return Integer(eth_estimate_gas(params)["result"])
+    end
+
+    def get_max_priority_fee_per_gas()
+      return Integer(eth_max_priority_fee_per_gas()["result"])
+    end
+
+    def get_base_fee()
+      return Integer(eth_get_block_by_number()["result"]['baseFeePerGas'])
+    end
+
+
     # Deploys a contract. Uses `eth_coinbase` or external signer
     # if no sender key is provided.
     #
@@ -181,11 +210,16 @@ module Eth
     def deploy(contract, *args, **kwargs)
       raise ArgumentError, "Cannot deploy contract without source or binary!" if contract.bin.nil?
       raise ArgumentError, "Missing contract constructor params!" if contract.constructor_inputs.length != args.length
-      gas_limit = Tx.estimate_intrinsic_gas(contract.bin) + Tx::CREATE_GAS
       data = contract.bin
       unless args.empty?
         data += encode_constructor_params(contract, args)
       end
+
+      estimated_gas = estimate_gas(data, sender_key: kwargs[:sender_key])
+      base_fee = get_base_fee()
+      priority_fee = get_max_priority_fee_per_gas()
+      gas_limit = contract.gas_limit.nil? ? estimated_gas : contract.gas_limit
+
       params = {
         value: 0,
         gas_limit: gas_limit,
@@ -198,8 +232,8 @@ module Eth
         })
       else
         params.merge!({
-          priority_fee: max_priority_fee_per_gas,
-          max_gas_fee: max_fee_per_gas,
+          priority_fee: priority_fee,
+          max_gas_fee: priority_fee + 2 * base_fee
         })
       end
       unless kwargs[:sender_key].nil?
@@ -268,8 +302,14 @@ module Eth
     #   @param address [String] contract address.
     # @return [Object] returns the result of the call.
     def transact(contract, function_name, *args, **kwargs)
-      gas_limit = Tx.estimate_intrinsic_gas(contract.bin) + Tx::CREATE_GAS
+      base_fee = get_base_fee()
+      priority_fee = get_max_priority_fee_per_gas()
       fun = contract.functions.select { |func| func.name == function_name }[0]
+      types = fun.inputs.map { |i| i.type }
+      encoded_str = Util.bin_to_hex(Eth::Abi.encode(types, args))
+      estimated_gas = estimate_gas(encoded_str, to: kwargs[:to], sender_key: kwargs[:sender_key]) + 2_000_000
+      gas_limit = contract.gas_limit.nil? ? estimated_gas : contract.gas_limit
+
       params = {
         value: 0,
         gas_limit: gas_limit,
@@ -283,8 +323,8 @@ module Eth
         })
       else
         params.merge!({
-          priority_fee: max_priority_fee_per_gas,
-          max_gas_fee: max_fee_per_gas,
+          priority_fee: (priority_fee) * 1.1,
+          max_gas_fee: (priority_fee + 2 * base_fee) * 1.1
         })
       end
       unless kwargs[:sender_key].nil?
@@ -372,7 +412,7 @@ module Eth
     def wait_for_tx(hash)
       start_time = Time.now
       timeout = 300
-      retry_rate = 0.1
+      retry_rate = 4
       loop do
         raise Timeout::Error if ((Time.now - start_time) > timeout)
         return hash if is_mined_tx? hash
@@ -442,7 +482,8 @@ module Eth
 
     # Prepares parameters and sends the command to the client.
     def send_command(command, args)
-      args << "latest" if ["eth_getBalance", "eth_call"].include? command
+      args << "latest" if ["eth_getBalance", "eth_call", "eth_getBlockByNumber", "eth_estimateGas"].include? command
+      args << false if ["eth_getBlockByNumber"].include? command
       payload = {
         jsonrpc: "2.0",
         method: command,
