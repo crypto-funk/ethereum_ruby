@@ -305,9 +305,8 @@ module Eth
       base_fee = get_base_fee()
       priority_fee = get_max_priority_fee_per_gas()
       fun = contract.functions.select { |func| func.name == function_name }[0]
-      types = fun.inputs.map { |i| i.type }
-      encoded_str = fun.signature + Util.bin_to_hex(Eth::Abi.encode(types, args))
-      estimated_gas = estimate_gas(encoded_str, to: kwargs[:to], sender_key: kwargs[:sender_key])
+      data = call_payload(fun, args)
+      estimated_gas = estimate_gas(data, to: kwargs[:to], sender_key: kwargs[:sender_key])
       gas_limit = contract.gas_limit.nil? ? estimated_gas : contract.gas_limit
 
       params = {
@@ -315,7 +314,7 @@ module Eth
         gas_limit: gas_limit,
         chain_id: chain_id,
         to: kwargs[:address] || contract.address,
-        data: call_payload(fun, args),
+        data: data,
       }
       if kwargs[:legacy]
         params.merge!({
