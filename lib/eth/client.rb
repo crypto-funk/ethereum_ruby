@@ -214,12 +214,7 @@ module Eth
       unless args.empty?
         data += encode_constructor_params(contract, args)
       end
-
-      estimated_gas = estimate_gas(data, sender_key: kwargs[:sender_key])
-      base_fee = get_base_fee()
-      priority_fee = get_max_priority_fee_per_gas()
-      gas_limit = contract.gas_limit.nil? ? estimated_gas : contract.gas_limit
-
+      gas_limit = Tx.estimate_intrinsic_gas(data) + Tx::CREATE_GAS
       params = {
         value: 0,
         gas_limit: gas_limit,
@@ -232,12 +227,12 @@ module Eth
         })
       else
         params.merge!({
-          priority_fee: priority_fee,
-          max_gas_fee: priority_fee + 2 * base_fee
+          priority_fee: max_priority_fee_per_gas,
+          max_gas_fee: max_fee_per_gas,
         })
       end
       unless kwargs[:sender_key].nil?
-        # use the provided key as sender and signer
+        # Uses the provided key as sender and signer
         params.merge!({
           from: kwargs[:sender_key].address,
           nonce: get_nonce(kwargs[:sender_key].address),
@@ -246,7 +241,7 @@ module Eth
         tx.sign kwargs[:sender_key]
         return eth_send_raw_transaction(tx.hex)["result"]
       else
-        # use the default account as sender and external signer
+        # Uses the default account as sender and external signer
         params.merge!({
           from: default_account,
           nonce: get_nonce(default_account),
@@ -302,13 +297,9 @@ module Eth
     #   @param address [String] contract address.
     # @return [Object] returns the result of the call.
     def transact(contract, function_name, *args, **kwargs)
-      base_fee = get_base_fee()
-      priority_fee = get_max_priority_fee_per_gas()
       fun = contract.functions.select { |func| func.name == function_name }[0]
-      data = call_payload(fun, args)
-      estimated_gas = estimate_gas(data, to: kwargs[:to], sender_key: kwargs[:sender_key])
-      gas_limit = contract.gas_limit.nil? ? estimated_gas : contract.gas_limit
-
+      data =  call_payload(fun, args)
+      gas_limit = Tx.estimate_intrinsic_gas(data) + Tx::CREATE_GAS
       params = {
         value: 0,
         gas_limit: gas_limit,
@@ -322,8 +313,8 @@ module Eth
         })
       else
         params.merge!({
-          priority_fee: (priority_fee) * 1.1,
-          max_gas_fee: (priority_fee + 2 * base_fee) * 1.1
+          priority_fee: max_priority_fee_per_gas,
+          max_gas_fee: max_fee_per_gas,
         })
       end
       unless kwargs[:sender_key].nil?
